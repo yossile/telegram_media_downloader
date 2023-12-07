@@ -183,12 +183,14 @@ async def download_media(
                 file_name, file_format = await _get_media_meta(_media, _type)
                 if _can_download(_type, file_formats, file_format):
                     if _is_exist(file_name):
-                        file_name = get_next_name(file_name)
-                        download_path = await client.download_media(
-                            message, file_name=file_name
-                        )
-                        # pylint: disable = C0301
-                        download_path = manage_duplicate_file(download_path)  # type: ignore
+                        # file_name = get_next_name(file_name)
+                        # download_path = await client.download_media(
+                        #     message, file_name=file_name
+                        # )
+                        # # pylint: disable = C0301
+                        # download_path = manage_duplicate_file(download_path)  # type: ignore
+                        logger.info("Skipping %s as file name already exists", file_name)
+                        download_path = None
                     else:
                         download_path = await client.download_media(
                             message, file_name=file_name
