@@ -11,6 +11,7 @@ class LogFilter(logging.Filter):
 
     # pylint: disable = W0221
     def filter(self, record):
-        if record.funcName in ("invoke"):
-            return False
-        return True
+        #if record.funcName in ("invoke"):
+        #    return False
+        #return True
+        return False

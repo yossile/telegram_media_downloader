@@ -22,6 +22,8 @@ logging.basicConfig(
 )
 logging.getLogger("pyrogram.session.session").addFilter(LogFilter())
 logging.getLogger("pyrogram.client").addFilter(LogFilter())
+logging.getLogger("pyrogram.dispatcher").addFilter(LogFilter())
+logging.getLogger("pyrogram.connection.connection").addFilter(LogFilter())
 logger = logging.getLogger("media_downloader")
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
