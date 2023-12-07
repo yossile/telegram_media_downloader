@@ -30,6 +30,7 @@ THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 FAILED_IDS: list = []
 DOWNLOADED_IDS: list = []
 
+DRY_MODE = False
 
 def update_config(config: dict):
     """
@@ -43,8 +44,9 @@ def update_config(config: dict):
     config["ids_to_retry"] = (
         list(set(config["ids_to_retry"]) - set(DOWNLOADED_IDS)) + FAILED_IDS
     )
-    with open("config.yaml", "w") as yaml_file:
-        yaml.dump(config, yaml_file, default_flow_style=False)
+    if not DRY_MODE:
+        with open("config.yaml", "w") as yaml_file:
+            yaml.dump(config, yaml_file, default_flow_style=False)
     logger.info("Updated last read message_id to config file")
 
 
@@ -192,9 +194,12 @@ async def download_media(
                         logger.info("Skipping %s as file name already exists", file_name)
                         download_path = None
                     else:
-                        download_path = await client.download_media(
-                            message, file_name=file_name
-                        )
+                        if not DRY_MODE:
+                            download_path = await client.download_media(
+                                message, file_name=file_name
+                            )
+                        else:
+                            download_path = file_name     
                     if download_path:
                         logger.info("Media downloaded - %s", download_path)
                     DOWNLOADED_IDS.append(message.id)
@@ -359,6 +364,10 @@ async def begin_import(config: dict, pagination_limit: int) -> dict:
 
 def main():
     """Main function of the downloader."""
+
+    if DRY_MODE:
+        logger.info("** Running in dry mode! **")
+
     with open(os.path.join(THIS_DIR, "config.yaml")) as f:
         config = yaml.safe_load(f)
     updated_config = asyncio.get_event_loop().run_until_complete(
