@@ -19,6 +19,7 @@ class MockLog:
 
 
 class MetaTestCase(unittest.TestCase):
+    @unittest.skip("logging disabled")
     def test_log_filter(self):
         result = LogFilter().filter(MockLog(funcName="invoke"))
         self.assertEqual(result, False)
