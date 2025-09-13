@@ -1,5 +1,5 @@
-https://github.com/Dineshkarthik/pyrogram/archive/refs/heads/master.zip
-PyYAML==6.0.1
-rich==13.7
-TgCrypto==1.2.5
-mock>=5.1
+PyYAML>=6.0.2
+rich>=14.0.0
+TgCrypto>=1.2.5
+mock>=5.2.0
+pyrofork>=2.3.0

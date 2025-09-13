@@ -7,6 +7,7 @@ from typing import List, Optional, Tuple, Union
 import pyrogram
 import yaml
 from pyrogram.types import Audio, Document, Photo, Video, VideoNote, Voice
+from pyrogram.errors import BadRequest
 from rich.logging import RichHandler
 
 from utils.file_management import get_next_name, manage_duplicate_file
@@ -27,6 +28,12 @@ logging.getLogger("pyrogram.connection.connection").addFilter(LogFilter())
 logger = logging.getLogger("media_downloader")
 
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+# List of other directories to check for existing files (absolute paths)
+OTHER_DIRS_TO_CHECK = [
+    os.path.expanduser("~/Downloads/Books/New"),
+    os.path.expanduser("~/Downloads/Books/New/EPUB"),
+    os.path.expanduser("~/Downloads/Books/New/PDF"),
+]
 FAILED_IDS: list = []
 DOWNLOADED_IDS: list = []
 
@@ -47,7 +54,7 @@ def update_config(config: dict):
     if not DRY_MODE:
         with open("config.yaml", "w") as yaml_file:
             yaml.dump(config, yaml_file, default_flow_style=False)
-    logger.info("Updated last read message_id to config file")
+    logger.info(f"Updated last read message_id ({config['last_read_message_id']}) to config file") # type: ignore
 
 
 def _can_download(_type: str, file_formats: dict, file_format: Optional[str]) -> bool:
@@ -183,66 +190,85 @@ async def download_media(
                 if _media is None:
                     continue
                 file_name, file_format = await _get_media_meta(_media, _type)
+                file_size = getattr(_media, "file_size", 0) or 0
                 if _can_download(_type, file_formats, file_format):
-                    if _is_exist(file_name):
-                        # file_name = get_next_name(file_name)
-                        # download_path = await client.download_media(
-                        #     message, file_name=file_name
-                        # )
-                        # # pylint: disable = C0301
-                        # download_path = manage_duplicate_file(download_path)  # type: ignore
-                        logger.info("Skipping %s as file name already exists", file_name)
-                        download_path = None
-                    else:
-                        if not DRY_MODE:
-                            download_path = await client.download_media(
-                                message, file_name=file_name
-                            )
-                        else:
-                            download_path = file_name     
-                    if download_path:
-                        logger.info("Media downloaded - %s", download_path)
-                    DOWNLOADED_IDS.append(message.id)
-            break
-        except pyrogram.errors.exceptions.bad_request_400.BadRequest:
+                        candidate_name = file_name
+                        counter = 1
+                        skip_download = False
+                        while True:
+                            # Check if already in the download dir or in other dirs
+                            check_paths = [candidate_name]
+                            for other_dir in OTHER_DIRS_TO_CHECK:
+                                check_paths.append(os.path.join(other_dir, os.path.basename(candidate_name)))
+                            for check_path in check_paths:
+                                if _is_exist(check_path):
+                                    existing_size = os.path.getsize(check_path)
+                                    if existing_size == file_size:
+                                        logger.info("Message[%d]: Skipping %s as file with same name and size already exists in %s", message.id, os.path.basename(candidate_name), os.path.dirname(check_path))
+                                        skip_download = True
+                                        break
+                            if skip_download or not any(_is_exist(p) for p in check_paths):
+                                break
+                            # If file exists but size is different, try next candidate name
+                            base, ext = os.path.splitext(file_name)
+                            candidate_name = f"{base}_{counter}{ext}"
+                            counter += 1
+                        if not skip_download:
+                            if not DRY_MODE:
+                                download_path = await client.download_media(
+                                    message, file_name=candidate_name
+                                )
+                            else:
+                                download_path = candidate_name
+                            logger.info("Message[%d]: Media downloaded for message - %s", message.id, download_path)
+                        DOWNLOADED_IDS.append(message.id)
+            return message.id
+        except BadRequest:
             logger.warning(
                 "Message[%d]: file reference expired, refetching...",
                 message.id,
             )
-            message = await client.get_messages(  # type: ignore
-                chat_id=message.chat.id,  # type: ignore
-                message_ids=message.id,
-            )
-            if retry == 2:
-                # pylint: disable = C0301
+            if retry < 2:  # Only refetch if we have retries left
+                message = await client.get_messages(  # type: ignore
+                    chat_id=message.chat.id,  # type: ignore
+                    message_ids=message.id,
+                )
+                continue  # Go to next retry iteration
+            else:
                 logger.error(
                     "Message[%d]: file reference expired for 3 retries, download skipped.",
                     message.id,
                 )
                 FAILED_IDS.append(message.id)
+                break  # Exit retry loop
         except TypeError:
-            # pylint: disable = C0301
             logger.warning(
-                "Timeout Error occurred when downloading Message[%d], retrying after 5 seconds",
+                "Message[%d]: Timeout Error occurred when downloading, retrying after 5 seconds",
                 message.id,
             )
-            await asyncio.sleep(5)
-            if retry == 2:
+            if retry < 2:  # Only sleep if we have retries left
+                await asyncio.sleep(5)
+                continue  # Go to next retry iteration
+            else:
                 logger.error(
-                    "Message[%d]: Timing out after 3 reties, download skipped.",
+                    "Message[%d]: Timing out after 3 retries, download skipped.",
                     message.id,
                 )
                 FAILED_IDS.append(message.id)
+                break  # Exit retry loop
         except Exception as e:
-            # pylint: disable = C0301
             logger.error(
                 "Message[%d]: could not be downloaded due to following exception:\n[%s].",
                 message.id,
                 e,
                 exc_info=True,
             )
-            FAILED_IDS.append(message.id)
-            break
+            if retry < 2:
+                logger.info("Message[%d]: Retrying...")
+                continue  # Retry for generic exceptions too
+            else:
+                FAILED_IDS.append(message.id)
+                break  # Exit retry loop
     return message.id
 
 
@@ -280,12 +306,10 @@ async def process_messages(
     int
         Max value of list of message ids.
     """
-    message_ids = await asyncio.gather(
-        *[
-            download_media(client, message, media_types, file_formats)
-            for message in messages
-        ]
-    )
+    message_ids = []
+    for message in messages:
+        message_id = await download_media(client, message, media_types, file_formats)
+        message_ids.append(message_id)
 
     last_message_id: int = max(message_ids)
     return last_message_id
@@ -319,8 +343,14 @@ async def begin_import(config: dict, pagination_limit: int) -> dict:
     )
     await client.start()
     last_read_message_id: int = config["last_read_message_id"]
+    # Keep track of the highest message id we have processed in this run.
+    # Since messages_iter yields from most recent down to min_id, the last
+    # processed batch may contain older (smaller) ids. Without tracking the
+    # global maximum, we'd mistakenly persist a lower id at the end.
+    highest_read_message_id: int = last_read_message_id
+    # message[0] = last message (id = 65328)
     messages_iter = client.get_chat_history(
-        config["chat_id"], offset_id=last_read_message_id, reverse=True
+        config["chat_id"], min_id=last_read_message_id
     )
     messages_list: list = []
     pagination_count: int = 0
@@ -338,27 +368,30 @@ async def begin_import(config: dict, pagination_limit: int) -> dict:
             pagination_count += 1
             messages_list.append(message)
         else:
-            last_read_message_id = await process_messages(
+            batch_max_message_id = await process_messages(
                 client,
                 messages_list,
                 config["media_types"],
                 config["file_formats"],
             )
+            # Update the highest read message id seen so far
+            highest_read_message_id = max(highest_read_message_id, batch_max_message_id)
             pagination_count = 0
             messages_list = []
             messages_list.append(message)
-            config["last_read_message_id"] = last_read_message_id
+            config["last_read_message_id"] = highest_read_message_id
             update_config(config)
     if messages_list:
-        last_read_message_id = await process_messages(
+        batch_max_message_id = await process_messages(
             client,
             messages_list,
             config["media_types"],
             config["file_formats"],
         )
+        highest_read_message_id = max(highest_read_message_id, batch_max_message_id)
 
     await client.stop()
-    config["last_read_message_id"] = last_read_message_id
+    config["last_read_message_id"] = highest_read_message_id
     return config
 
 
